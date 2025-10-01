@@ -101,7 +101,7 @@ ipython_config.py
 # uv.lock
 
 # poetry
-#   Similar to Pipfile.lock, it is recommended to include poetry.lock in version control.
+#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
 #   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
@@ -207,6 +207,13 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# Cursor
+#   Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
+#   exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
+#   refer to https://docs.cursor.com/context/ignore-files
+.cursorignore
+.cursorindexingignore
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
@@ -219,17 +226,12 @@ __marimo__/
 # --- 我自己新增的忽略規則 --- #
 #############################
 
-# 1. 通用忽略規則：忽略根目錄下的 Data 資料夾 (大寫 D)
-#    - 這會確保整個專案根目錄下的 Data/ 資料夾被忽略。
+# 忽略根目錄下的 Data 和 testing 資料夾
 /Data/
-
-# 2. 通用忽略規則：忽略根目錄下的 testing 資料夾
 /testing/
 
-# 3. 忽略特定路徑下的敏感檔案
+# 忽略特定路徑下的敏感檔案
 LLM_Report_Service_v1/.env
 
-# 4. 關鍵例外規則：取消忽略特定子資料夾
-#    - 驚嘆號 (!) 用來覆蓋所有通用的忽略規則 (例如任何可能的 */data/ 規則)，
-#      確保這個特定的子資料夾及其內容會被追蹤。
+# 關鍵例外規則：確保這個特定的子資料夾及其內容會被追蹤
 !LLM_Report_Service_v1/data/
