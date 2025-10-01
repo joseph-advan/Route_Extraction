@@ -221,7 +221,7 @@ __marimo__/
 
 # 忽略整個資料夾 (斜線/結尾代表是資料夾)
 Data/
-Test/
+testing/
 
 # 忽略特定路徑下的檔案
 LLM_Report_Service_v1/.env
