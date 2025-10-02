@@ -20,7 +20,7 @@ def haversine_distance(lon1, lat1, lon2, lat2):
     meters = R * c
     return meters
 
-def cluster_cameras_by_distance(all_cameras_df: pd.DataFrame, radius_meters: int = 200) -> pd.DataFrame:
+def cluster_cameras_by_distance(all_cameras_df: pd.DataFrame, radius_meters: int = 50) -> pd.DataFrame:
     """
     根據地理距離對所有攝影機進行分群。
     """
