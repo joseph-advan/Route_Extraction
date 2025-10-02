@@ -1,165 +1,145 @@
-# analysis/similarity_analyzer.py (V5 - 整合互動流程)
+# analysis/similarity_analyzer.py (V12.0 - 分析報告版)
 
 import pandas as pd
 from collections import Counter, defaultdict
+import numpy as np
 
-# --- 分析核心函式 (第一階段) ---
-def find_top_companions(full_df: pd.DataFrame, target_plate: str, 
-                        time_window_minutes: int = 1, 
-                        min_consecutive_points: int = 10) -> dict:
+# --- 核心資料處理函式 (與前版相同) ---
+def find_all_co_occurrence_events(df1: pd.DataFrame, df2: pd.DataFrame, time_tolerance_minutes: int = 15) -> pd.DataFrame:
+    df1['time_key'] = df1['datetime'].dt.round(f'{time_tolerance_minutes}min')
+    df2['time_key'] = df2['datetime'].dt.round(f'{time_tolerance_minutes}min')
+    merged_df = pd.merge(df1, df2, on=['LocationID', 'time_key'])
+    time_diff = (merged_df['datetime_x'] - merged_df['datetime_y']).abs()
+    return merged_df[time_diff <= pd.Timedelta(minutes=time_tolerance_minutes)].copy()
+
+def stitch_events_into_routes(events_df: pd.DataFrame, max_gap_minutes: int = 60) -> list:
+    if events_df.empty: return []
+    events_df = events_df.sort_values(by='datetime_x').reset_index(drop=True)
+    routes, current_route = [], []
+    for _, row in events_df.iterrows():
+        if not current_route or (row['datetime_x'] - current_route[-1]['datetime_x']) > pd.Timedelta(minutes=max_gap_minutes):
+            if len(current_route) > 1: routes.append(current_route)
+            current_route = [row.to_dict()]
+        else:
+            current_route.append(row.to_dict())
+    if len(current_route) > 1: routes.append(current_route)
+    return routes
+
+# ========================= 全新：報告生成模組 =========================
+def analyze_route_summary(instances: list, target_plate: str) -> dict:
     """
-    (V4 - 豐富資訊版) 找出同行夥伴，並回傳詳細的時空維度資訊。
+    【全新】分析一條頻繁路徑的所有發生實例，並產生摘要。
     """
-    min_co_occurrences = min_consecutive_points
-    if 'LocationID' not in full_df.columns:
-        return {"status": "error", "message": "錯誤：資料中缺少 'LocationID' 欄位。", "similar_vehicles": []}
-    
-    df_sorted = full_df.sort_values(by=['LocationID', 'datetime']).reset_index(drop=True)
-    
-    co_occurrence_events = []
-    for loc_id, group in df_sorted.groupby('LocationID'):
-        if len(group) < 2: continue
-        time_diffs = group['datetime'].diff() > pd.Timedelta(minutes=time_window_minutes)
-        event_ids = time_diffs.cumsum()
-        for _, event_group in group.groupby(event_ids):
-            if len(event_group) > 1:
-                unique_plates = set(event_group['車牌'])
-                if target_plate in unique_plates:
-                    co_occurrence_events.append({
-                        'location': loc_id,
-                        'plates': unique_plates,
-                        'datetime': event_group['datetime'].mean()
-                    })
+    target_travel_times = []
+    partner_travel_times = []
+    start_hours = []
 
-    if not co_occurrence_events:
-        return {"status": "success", "message": f"分析完成，但未找到任何與 {target_plate} 的同行事件。", "similar_vehicles": []}
-
-    companion_stats = defaultdict(lambda: {"datetimes": [], "locations": []})
-    for event in co_occurrence_events:
-        plates = event['plates']
-        plates.remove(target_plate)
-        for companion_plate in plates:
-            companion_stats[companion_plate]["datetimes"].append(event['datetime'])
-            companion_stats[companion_plate]["locations"].append(event['location'])
-            
-    similar_vehicles = []
-    sorted_companions = sorted(companion_stats.items(), key=lambda item: len(item[1]['datetimes']), reverse=True)
-
-    for plate, stats in sorted_companions:
-        count = len(stats['datetimes'])
-        if count >= min_co_occurrences:
-            datetimes = stats['datetimes']
-            locations = stats['locations']
-            
-            first_sighting = min(datetimes).strftime('%Y-%m-%d %H:%M:%S')
-            last_sighting = max(datetimes).strftime('%Y-%m-%d %H:%M:%S')
-            unique_days = pd.to_datetime(datetimes).normalize().nunique()
-            breadth = len(set(locations))
-            hotspots = [f"{loc} ({count}次)" for loc, count in Counter(locations).most_common(3)]
-
-            similar_vehicles.append({
-                "plate": plate, "score": count, "first_sighting": first_sighting,
-                "last_sighting": last_sighting, "unique_days": unique_days,
-                "breadth": breadth, "hotspots": hotspots
-            })
-
-    if not similar_vehicles:
-        return {"status": "success", "message": f"分析完成，但沒有車輛的同行次數達到 {min_co_occurrences} 次門檻。", "similar_vehicles": []}
+    for instance in instances:
+        details = instance['details']
+        target_start = details[0]['datetime_x']
+        target_end = details[-1]['datetime_x']
+        partner_start = details[0]['datetime_y']
+        partner_end = details[-1]['datetime_y']
         
-    return {"status": "success", "message": "成功找到同行車輛。", "similar_vehicles": similar_vehicles}
+        target_travel_times.append((target_end - target_start).total_seconds())
+        partner_travel_times.append((partner_end - partner_start).total_seconds())
+        start_hours.append(target_start.hour)
 
-# --- 分析核心函式 (第二階段) ---
-def find_hot_routes(full_df: pd.DataFrame, plate1: str, plate2: str, 
-                    time_window_minutes: int = 5,
-                    min_route_occurrences: int = 3) -> dict:
-    """
-    分析兩輛指定車牌最常共同行駛的路線 (LocationID_A -> LocationID_B)。
-    """
-    pair_df = full_df[full_df['車牌'].isin([plate1, plate2])].copy()
-    pair_df = pair_df.sort_values(by=['LocationID', 'datetime'])
-    co_occurrence_events = []
-    for loc_id, group in pair_df.groupby('LocationID'):
-        if len(group) < 2: continue
-        time_diffs = group['datetime'].diff() > pd.Timedelta(minutes=time_window_minutes)
-        event_ids = time_diffs.cumsum()
-        for _, event_group in group.groupby(event_ids):
-            plates_in_event = set(event_group['車牌'])
-            if plate1 in plates_in_event and plate2 in plates_in_event:
-                co_occurrence_events.append({'datetime': event_group['datetime'].mean(), 'LocationID': loc_id})
-    if len(co_occurrence_events) < 2:
-        return {"status": "success", "message": "兩車同行事件過少，無法分析路線。", "hot_routes": []}
-    events_df = pd.DataFrame(co_occurrence_events).sort_values(by='datetime')
-    events_df['NextLocationID'] = events_df['LocationID'].shift(-1)
-    events_df.dropna(subset=['NextLocationID'], inplace=True)
-    route_counter = Counter(zip(events_df['LocationID'], events_df['NextLocationID']))
-    hot_routes = []
-    for (loc_a, loc_b), count in route_counter.most_common():
-        if count >= min_route_occurrences:
-            hot_routes.append({"route": f"{loc_a} -> {loc_b}", "count": count})
-    if not hot_routes:
-        return {"status": "success", "message": f"分析完成，但未找到出現超過 {min_route_occurrences} 次的固定同行路線。", "hot_routes": []}
-    return {"status": "success", "message": "成功找到熱門同行路線。", "hot_routes": hot_routes[:5]}
+    # 分析同行時段是否集中
+    hour_std_dev = np.std(start_hours)
+    if hour_std_dev > 3: # 如果開始時間的標準差大於3小時，認為時間段分散
+        time_period_summary = "同行時段分散 (橫跨早/中/晚)，請參考下方詳細案例。"
+    else:
+        avg_hour = int(np.mean(start_hours))
+        time_period_summary = f"主要集中在 {avg_hour:02d}:00 ~ {avg_hour+1:02d}:00 之間。"
 
-# --- 全新：整合性互動流程函式 ---
-def run_full_analysis_flow(full_data: pd.DataFrame):
-    """
-    處理「尋找同行車輛」及後續的「熱門路線分析」的完整互動流程。
-    """
+    return {
+        'avg_target_time_min': np.mean(target_travel_times) / 60,
+        'avg_partner_time_min': np.mean(partner_travel_times) / 60,
+        'time_period_summary': time_period_summary
+    }
+
+def run_event_driven_analysis(full_data: pd.DataFrame, min_route_len: int = 2):
+    """主流程函式：產生詳細的分析報告。"""
+    time_tolerance_minutes = 15
+    if 'LocationID' not in full_data.columns:
+        print("錯誤：資料中缺少 'LocationID' 欄位。"); return
+        
     available_plates = sorted(full_data['車牌'].unique())
-    print("\n--- 尋找同行車輛 ---")
+    print("\n" + "="*50); print("== 事件驅動同行路徑分析報告 =="); print("="*50)
+    print(f"** 目前設定：只統計長度 >= {min_route_len} 的同行路徑 **")
+    print(f"** 時間容忍度：兩車出現在同地點的時間差在 {time_tolerance_minutes} 分鐘內 **")
     for i, plate in enumerate(available_plates): print(f"  [{i+1}] {plate}")
 
     try:
-        choice_input = input(f"請選擇要作為基準的目標車牌 [1-{len(available_plates)}]: ")
-        choice = int(choice_input)
-        target_plate = available_plates[choice - 1]
+        choice_input = input(f"\n請選擇要作為基準的目標車牌 [1-{len(available_plates)}]: ")
+        target_plate = available_plates[int(choice_input) - 1]
+        target_df = full_data[full_data['車牌'] == target_plate].copy()
+        
+        print("\n--- 正在掃描所有同行事件並組合路徑... ---")
+        all_common_routes = []
+        for partner_plate, partner_df in full_data.groupby('車牌'):
+            if partner_plate == target_plate: continue
+            co_events = find_all_co_occurrence_events(target_df, partner_df, time_tolerance_minutes)
+            if not co_events.empty:
+                routes = stitch_events_into_routes(co_events)
+                for route in routes:
+                    if len(route) >= min_route_len:
+                        all_common_routes.append({
+                            'partner': partner_plate,
+                            'route_tuple': tuple(item['LocationID'] for item in route),
+                            'details': route
+                        })
 
-        time_window = 1
-        min_occur = 10
-        print(f"\n--- 正在為 {target_plate} 尋找同行夥伴 (時間窗 ±{time_window} 分鐘，最少 {min_occur} 次同行)... ---")
+        if not all_common_routes:
+            print(f"\n分析完成：未找到與 {target_plate} 任何長度超過 {min_route_len} 的同行路徑。"); return
+
+        route_counter = Counter(item['route_tuple'] for item in all_common_routes)
+        cam_name_map = full_data.groupby('LocationID')['攝影機名稱'].unique().apply(list).to_dict()
         
-        result = find_top_companions(full_data, target_plate, 
-                                     time_window_minutes=time_window, 
-                                     min_consecutive_points=min_occur)
+        print(f"\n--- 與 {target_plate} 的最頻繁同行路徑 Top 3 分析報告 ---")
         
-        print("\n--- 分析結果 ---")
-        print(f"狀態: {result['status']}")
-        print(f"訊息: {result['message']}")
-        
-        if result['similar_vehicles']:
-            companions = result['similar_vehicles']
-            print("\n推薦的同行夥伴:")
+        for i, (route_tuple, count) in enumerate(route_counter.most_common(3)):
+            path_str = " -> ".join(route_tuple)
+            instances = [item for item in all_common_routes if item['route_tuple'] == route_tuple]
             
-            for i, vehicle in enumerate(companions):
-                print("\n" + "-"*40)
-                print(f" {i+1}. 車牌: {vehicle['plate']}")
-                print(f"    - 同行地點次數: {vehicle['score']}")
-                print(f"    - 首次同行時間: {vehicle['first_sighting']}")
-                print(f"    - 末次同行時間: {vehicle['last_sighting']}")
-                print(f"    - 同行總天數: {vehicle['unique_days']} 天")
-                print(f"    - 同行廣度 (不同地點數): {vehicle['breadth']}")
-                print(f"    - Top 3 熱點區域: {', '.join(vehicle['hotspots'])}")
-            print("-" * 40)
+            # 產生並印出摘要
+            summary = analyze_route_summary(instances, target_plate)
+            start_loc_id, end_loc_id = route_tuple[0], route_tuple[-1]
+            start_cam_names = cam_name_map.get(start_loc_id, ["未知"])
+            end_cam_names = cam_name_map.get(end_loc_id, ["未知"])
+
+            print("\n" + "="*70)
+            print(f"## 報告 {i+1}: 最頻繁同行路徑")
+            print("="*70)
+            print(f"  - 路線 ({len(route_tuple)}個地點): {path_str}")
+            print(f"  - 總計發生: {count} 次")
+            print(f"  - 起點名稱: {start_cam_names[0]}")
+            print(f"  - 終點名稱: {end_cam_names[0]}")
+            print("\n  【路線摘要】")
+            print(f"  - 同行時段分析: {summary['time_period_summary']}")
+            print(f"  - 平均旅行時間: {target_plate} 約 {summary['avg_target_time_min']:.1f} 分鐘 | 夥伴車輛約 {summary['avg_partner_time_min']:.1f} 分鐘")
             
-            hot_route_choice = input("\n是否要對其中一輛車進行深入的「熱門同行路線」分析? (y/N): ").lower()
-            if hot_route_choice == 'y':
-                partner_choice_input = input(f"請選擇要分析的夥伴車牌 [1-{len(companions)}]: ")
-                partner_choice = int(partner_choice_input)
-                if 1 <= partner_choice <= len(companions):
-                    partner_plate = companions[partner_choice - 1]['plate']
-                    
-                    # 在此直接呼叫並處理熱門路線分析
-                    print(f"\n--- 正在分析 {target_plate} 與 {partner_plate} 的熱門同行路線 (最少 3 次)... ---")
-                    route_result = find_hot_routes(full_data, target_plate, partner_plate, min_route_occurrences=3)
-                    print("\n--- 熱門路線分析結果 ---")
-                    print(f"狀態: {route_result['status']}")
-                    print(f"訊息: {route_result['message']}")
-                    if route_result['hot_routes']:
-                        print("\n最常見的同行路線 Top 5:")
-                        for route in route_result['hot_routes']:
-                            print(f"  - 路線: {route['route']}, 共同行駛次數: {route['count']}")
-                else:
-                    print("錯誤：無效的選擇。")
+            # 印出詳細案例
+            print("\n  【詳細案例列表】")
+            for j, instance in enumerate(instances):
+                partner = instance['partner']
+                details = instance['details']
+                
+                target_start_time = details[0]['datetime_x']
+                target_end_time = details[-1]['datetime_x']
+                partner_start_time = details[0]['datetime_y']
+                partner_end_time = details[-1]['datetime_y']
+
+                time_diff_seconds = (partner_start_time - target_start_time).total_seconds()
+                time_diff_min = time_diff_seconds / 60
+                time_corr_str = f"晚 {abs(time_diff_min):.1f} 分鐘" if time_diff_min > 0 else f"早 {abs(time_diff_min):.1f} 分鐘"
+                
+                print(f"    - [案例 #{j+1}] 與 {partner} 在 {target_start_time.strftime('%Y-%m-%d')}")
+                print(f"      - {target_plate.ljust(9)}: {target_start_time.strftime('%H:%M:%S')} -> {target_end_time.strftime('%H:%M:%S')}")
+                print(f"      - {partner.ljust(9)}: {partner_start_time.strftime('%H:%M:%S')} -> {partner_end_time.strftime('%H:%M:%S')} (在起點比目標{time_corr_str})")
 
     except (ValueError, IndexError):
         print("錯誤：無效的選擇，返回主菜單。")
+    except Exception as e:
+        print(f"分析過程中發生未預期的錯誤: {e}, {e.__traceback__.tb_lineno}")
