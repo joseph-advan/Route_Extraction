@@ -12,7 +12,7 @@ def find_all_co_occurrence_events(df1: pd.DataFrame, df2: pd.DataFrame, time_tol
     time_diff = (merged_df['datetime_x'] - merged_df['datetime_y']).abs()
     return merged_df[time_diff <= pd.Timedelta(minutes=time_tolerance_minutes)].copy()
 
-def stitch_events_into_routes(events_df: pd.DataFrame, max_gap_minutes: int = 60) -> list:
+def stitch_events_into_routes(events_df: pd.DataFrame, max_gap_minutes: int = 20) -> list:
     if events_df.empty: return []
     events_df = events_df.sort_values(by='datetime_x').reset_index(drop=True)
     routes, current_route = [], []
@@ -59,9 +59,8 @@ def analyze_route_summary(instances: list, target_plate: str) -> dict:
         'time_period_summary': time_period_summary
     }
 
-def run_event_driven_analysis(full_data: pd.DataFrame, min_route_len: int = 2):
+def run_event_driven_analysis(full_data: pd.DataFrame, min_route_len: int = 2,  time_tolerance_minutes: int = 5):
     """主流程函式：產生詳細的分析報告。"""
-    time_tolerance_minutes = 15
     if 'LocationID' not in full_data.columns:
         print("錯誤：資料中缺少 'LocationID' 欄位。"); return
         

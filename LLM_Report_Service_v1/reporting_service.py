@@ -30,8 +30,23 @@ def run_llm_reporting_flow(full_df: pd.DataFrame, target_plate: str, debug_mode:
 
     vehicle_data_with_area = pd.merge(vehicle_data, cameras_with_area_id[['攝影機', 'LocationAreaID']], on='攝影機', how='left')
     stay_points_result = find_stay_points_v2(vehicle_data_with_area, time_threshold_minutes=20)
-    if not stay_points_result: print(f"- No stay points found for {target_plate}. Analysis stopped."); return
+
+
+    if not stay_points_result:
+        # 產生並印出你指定的詳細說明
+        print("\n" + "="*70)
+        print("## 分析中止：無法定位主要棲息地")
+        print("="*70)
+        print(f"原因：無法從現有軌跡中找到任何 {target_plate} 有效的長時停留點 (棲息地)。")
+
+        print("\n建議：")
+        print("- 確認查詢的時間範圍是否正確。")
+        print("- 嘗試查找或整合更多元的監視器數據來源，以獲得更完整的車輛軌跡。")
+        return
+    
     if debug_mode: print(f"- Found {len(stay_points_result)} stay point events.")
+
+
     
     trips_result = segment_trips_v3(vehicle_data_with_area)
     if not trips_result: print(f"- Could not segment any trips for {target_plate}. Analysis stopped."); return

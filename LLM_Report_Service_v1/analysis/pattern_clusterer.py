@@ -3,8 +3,8 @@ import numpy as np
 
 def get_time_slot(hour: int) -> str:
     """Gets the time slot (e.g., morning, afternoon) based on the hour."""
-    if 5 <= hour < 8: return "清晨"
-    elif 8 <= hour < 12: return "上午"
+    if 4 <= hour < 7: return "清晨"
+    elif 7 <= hour < 12: return "上午"
     elif 12 <= hour < 18: return "下午"
     elif 18 <= hour < 23: return "晚上"
     else: return "深夜"
@@ -96,15 +96,29 @@ def find_regular_patterns_v13(trips: list, stay_points: list, all_cameras_with_a
                 "visit_count": int(row['visit_count']),
                 "total_duration_hours": round(row['total_duration_minutes'] / 60, 1)
             }
-            if int(row['visit_count']) > 1:
+            # 1. 定義「長期駐留」的門檻值 (平均停留超過 24 小時)
+            LONG_STAY_THRESHOLD_HOURS = 24.0
+            avg_duration_hours = row['avg_duration_minutes'] / 60
+
+            # 2. 判斷是否滿足「長期駐留」條件
+            if int(row['visit_count']) > 1 and avg_duration_hours >= LONG_STAY_THRESHOLD_HOURS:
+                stats_dict["stay_pattern_type"] = "長期駐留"
+                stats_dict["avg_duration_days"] = round(avg_duration_hours / 24, 1)
+            
+            # 3. 如果不是長期駐留，則沿用舊的「多次停留」邏輯
+            elif int(row['visit_count']) > 1:
                 stats_dict["stay_pattern_type"] = "多次停留"
-                stats_dict["avg_duration_hours"] = round(row['avg_duration_minutes'] / 60, 1)
+                stats_dict["avg_duration_hours"] = round(avg_duration_hours, 1)
                 stats_dict["duration_range_hours"] = [
                     round(row['min_duration_minutes'] / 60, 1),
                     round(row['max_duration_minutes'] / 60, 1)
                 ]
+                avg_arrival_h, avg_arrival_m = divmod(row['avg_arrival_hour'] * 60, 60)
+                avg_departure_h, avg_departure_m = divmod(row['avg_departure_hour'] * 60, 60)
                 stats_dict["avg_arrival_time"] = f"{int(avg_arrival_h):02d}:{int(avg_arrival_m):02d}"
                 stats_dict["avg_departure_time"] = f"{int(avg_departure_h):02d}:{int(avg_departure_m):02d}"
+            
+            # 4. 單次停留的邏輯不變
             else:
                 stats_dict["stay_pattern_type"] = "單次長時停留"
 

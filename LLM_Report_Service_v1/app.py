@@ -1,11 +1,12 @@
-# app.py (V7 - 最終簡化版)
+# app.py (V9 - 精簡版)
 
 import pandas as pd
 from pathlib import Path
 
-# 匯入最新的分析函式
+# 匯入需要的分析函式
 from reporting_service import run_llm_reporting_flow
-from analysis.similarity_analyzer import run_event_driven_analysis
+# 【已移除】similarity_analyzer 的匯入
+from analysis.convoy_analyzer import run_trip_oriented_convoy_analysis
 
 def main_console():
     """
@@ -16,8 +17,7 @@ def main_console():
         current_file_path = Path(__file__)
         project_root_path = current_file_path.parent
         
-        # 只需要讀取一個檔案，因為它已包含所有必要資訊
-        DATA_FILE_PATH = project_root_path / 'data' / 'realistic_vehicle_dataset.csv'
+        DATA_FILE_PATH = project_root_path / 'data' / 'realistic_vehicle_dataset1.csv'
         full_data = pd.read_csv(DATA_FILE_PATH)
         full_data['datetime'] = pd.to_datetime(full_data['日期'] + ' ' + full_data['時間'])
         full_data = full_data.sort_values(by='datetime').reset_index(drop=True)
@@ -26,7 +26,6 @@ def main_console():
             print(f"錯誤：資料檔案 {DATA_FILE_PATH} 中缺少 'LocationID' 欄位。")
             return
         
-        # 確保 LocationID 型別為字串，以利後續比對
         full_data['LocationID'] = full_data['LocationID'].astype(str)
             
         print("--- 成功讀取並預處理軌跡資料 ---")
@@ -43,17 +42,18 @@ def main_console():
         print("\n" + "="*50)
         print("== 車輛軌跡智慧分析系統 ==")
         print("="*50)
+        # 【【【 核心修改處：簡化選單 】】】
         print("  [1] 生成單一車輛深度分析報告 (LLM)")
-        print("  [2] 尋找同行車輛 (事件驅動分析)")
+        print("  [2] 分析目標行程的隨行車輛 (行程導向)")
         print("  [q] 結束程式")
         
         choice = input("請輸入您的選擇: ")
         
         if choice == '1':
             run_single_vehicle_analysis(full_data)
+        # 【【【 核心修改處：移除選項 2，並將選項 3 改為 2 】】】
         elif choice == '2':
-            # 呼叫最新的分析函式，不再需要傳遞額外的 cameras_df
-            run_event_driven_analysis(full_data)
+            run_trip_oriented_convoy_analysis(full_data)
         elif choice.lower() == 'q':
             print("感謝使用，程式結束。")
             break

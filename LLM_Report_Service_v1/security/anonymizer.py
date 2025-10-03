@@ -1,5 +1,6 @@
-# security/anonymizer.py (最終完整版)
+# security/anonymizer.py (修正後)
 import pandas as pd
+
 def format_summary_for_prompt(summary: dict, area_map: dict) -> str:
     """
     將結構化的 summary 轉換為一個對 LLM 更友善、資訊更豐富的純文字格式。
@@ -14,11 +15,13 @@ def format_summary_for_prompt(summary: dict, area_map: dict) -> str:
         hb = summary['base_info']['primary']
         prompt_text += f"- 主要基地: {hb['area_id']} ({hb['name']})\n"
         prompt_text += f"  - 長時停留次數: {hb.get('long_stay_count', hb['visit_count'])} 次\n"
-        arrival_time = hb.get('avg_arrival_time')
-        departure_time = hb.get('avg_departure_time')
-        if arrival_time and departure_time:
-            prompt_text += f"  - 平均停留時段: {arrival_time} ~ {departure_time}\n"
-        else:
+
+        # 【單一、正確的判斷邏輯】
+        if hb.get('stay_pattern_type') == '長期駐留':
+            prompt_text += f"  - 模式：長期駐留 (平均每次停留約 {hb['avg_duration_days']} 天)\n"
+        elif hb.get('avg_arrival_time') and hb.get('avg_departure_time'):
+            prompt_text += f"  - 平均停留時段: {hb['avg_arrival_time']} ~ {hb['avg_departure_time']}\n"
+        else: # 處理單次停留的情況
             prompt_text += f"  - 停留時長: {hb['total_duration_hours']} 小時\n"
     else:
         prompt_text += "- 無法確定主要基地。\n"
@@ -27,24 +30,31 @@ def format_summary_for_prompt(summary: dict, area_map: dict) -> str:
         for i, sb in enumerate(summary['base_info']['secondary']):
             prompt_text += f"- 次要基地 {i+1}: {sb['area_id']} ({sb['name']})\n"
             prompt_text += f"  - 長時停留次數: {sb.get('long_stay_count', sb['visit_count'])} 次\n"
-            arrival_time = sb.get('avg_arrival_time')
-            departure_time = sb.get('avg_departure_time')
-            if arrival_time and departure_time:
-                prompt_text += f"  - 平均停留時段: {arrival_time} ~ {departure_time}\n"
-            else:
+
+            # 【單一、正確的判斷邏輯，並使用正確的變數 sb】
+            if sb.get('stay_pattern_type') == '長期駐留':
+                prompt_text += f"  - 模式：長期駐留 (平均每次停留約 {sb['avg_duration_days']} 天)\n"
+            elif sb.get('avg_arrival_time') and sb.get('avg_departure_time'):
+                prompt_text += f"  - 平均停留時段: {sb['avg_arrival_time']} ~ {sb['avg_departure_time']}\n"
+            else: # 處理單次停留的情況
                 prompt_text += f"  - 停留時長: {sb['total_duration_hours']} 小時\n"
     
-    # --- 所有停留點統計 ---
+    # --- 所有停留點統計 (這裡也使用我們之前修改好的新邏輯) ---
     prompt_text += "\n[所有停留點統計]\n"
     for sp in summary['all_stay_points_stats']:
         prompt_text += f"- {sp['area_id']} ({sp['name']}): "
         prompt_text += f"來訪 {sp['visit_count']} 次, 總計 {sp['total_duration_hours']} 小時"
-        if sp.get('avg_arrival_time'):
+        
+        if sp.get('stay_pattern_type') == '長期駐留':
+            prompt_text += f", 模式：長期駐留 (平均每次停留約 {sp['avg_duration_days']} 天)\n"
+        elif sp.get('avg_arrival_time'):
              prompt_text += f", 通常時段 {sp['avg_arrival_time']} ~ {sp['avg_departure_time']}\n"
         else:
              prompt_text += "\n"
 
-    # --- 已確認的規律模式 ---
+    # --- 後續的程式碼 (規律模式、異常事件) 維持不變 ---
+    # (此處省略後續未變動的程式碼，你的版本是正確的)
+    # ...
     prompt_text += "\n[已確認的規律模式]\n"
     if summary['regular_patterns']:
         for i, p in enumerate(summary['regular_patterns']):
@@ -55,28 +65,20 @@ def format_summary_for_prompt(summary: dict, area_map: dict) -> str:
         prompt_text += "- 無\n"
 
 
-    # --- 路徑異常事件 ---
     prompt_text += "\n[路徑異常事件 (次數較少的行程)]\n"
     if summary['infrequent_patterns']:
-        # Convert to DataFrame to easily group by signature
         infrequent_df = pd.DataFrame(summary['infrequent_patterns'])
-        
-        # Group by the signature and iterate through each group
         for signature, group in infrequent_df.groupby('signature'):
             start_name = id_to_name.get(group['start_area_id'].iloc[0], "未知")
             end_name = id_to_name.get(group['end_area_id'].iloc[0], "未知")
             count = len(group)
-            
-            # Print a header for the group
-            prompt_text += f"- 模式「從 {start_name} 到 {end_name}」 (共 {count} 次):\n"
-            
-            # List each specific occurrence time for that group
+            avg_duration = group['duration_minutes'].mean()
+            prompt_text += f"- 模式「從 {start_name} 到 {end_name}」 (共 {count} 次, 平均耗時 {avg_duration:.1f} 分鐘):\n"
             for _, row in group.iterrows():
                 prompt_text += f"  - {row['start_time'].strftime('%Y-%m-%d %H:%M')} 到 {row['end_time'].strftime('%Y-%m-%d %H:%M')}\n"
     else:
         prompt_text += "- 無\n"
         
-    # --- 時間異常事件 ---
     prompt_text += "\n[時間異常事件]\n"
     if summary['duration_anomalies']:
         for a in summary['duration_anomalies']:
@@ -95,7 +97,6 @@ def format_summary_for_prompt(summary: dict, area_map: dict) -> str:
         
     prompt_text += "\n--- 摘要結束 ---\n"
     return prompt_text
-
 
 def anonymize_data(summary: dict, area_map: dict, plate_number: str):
     """

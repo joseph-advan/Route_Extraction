@@ -27,6 +27,7 @@ def find_anomalies_v3(trips_df: pd.DataFrame, regular_patterns: list) -> dict:
                 "end_time": row['end_time'], # <--- ADDED
                 "start_area_id": row['start_area_id'],
                 "end_area_id": row['end_area_id'],
+                "duration_minutes": row['duration_minutes'],
                 "signature": row['signature']
             })
 
