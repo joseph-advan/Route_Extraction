@@ -1,4 +1,4 @@
-# analysis/convoy_analyzer.py (V7 - 排序優化版)
+# analysis/convoy_analyzer.py (V9 - 新增摘要總表)
 import pandas as pd
 import numpy as np
 from itertools import groupby
@@ -22,36 +22,50 @@ def _find_continuous_segments(events_df: pd.DataFrame, max_gap_minutes: int = 10
         segments.append(group.drop(columns=['time_gap']))
     return segments
 
-def _get_following_pattern(target_trip_df: pd.DataFrame, convoy_segment_df: pd.DataFrame) -> str:
-    """根據同行路段在完整行程中的位置，產生跟隨模式標籤。"""
+def _get_following_pattern_v2(target_trip_df: pd.DataFrame, convoy_segment_df: pd.DataFrame) -> str:
+    """
+    【V2版】根據同行路段在完整行程中的位置和比例，產生更詳細的跟隨模式標籤。
+    """
     target_len = len(target_trip_df)
     if target_len == 0: return "模式未知"
     convoy_len = len(convoy_segment_df)
     
-    if convoy_len / target_len > 0.9:
-        return "全程跟隨"
+    ratio = convoy_len / target_len
+    if ratio > 0.9: length_tag = "全程"
+    elif ratio > 0.6: length_tag = "長程"
+    elif ratio > 0.3: length_tag = "中程"
+    else: length_tag = "短程"
+
+    if length_tag == "全程": return "全程跟隨"
 
     first_convoy_point_time = convoy_segment_df.iloc[0]['datetime_x']
     last_convoy_point_time = convoy_segment_df.iloc[-1]['datetime_x']
 
     start_indices = target_trip_df.index[target_trip_df['datetime'] == first_convoy_point_time]
-    if len(start_indices) == 0: return "模式未知"
+    if len(start_indices) == 0: return f"{length_tag}跟隨 (位置未知)"
     start_idx = start_indices[0]
 
     end_indices = target_trip_df.index[target_trip_df['datetime'] == last_convoy_point_time]
-    if len(end_indices) == 0: return "模式未知"
+    if len(end_indices) == 0: return f"{length_tag}跟隨 (位置未知)"
     end_idx = end_indices[0]
 
-    is_start = start_idx < target_len / 3
-    is_end = end_idx > target_len * 2 / 3
+    def get_position_label(idx, length):
+        pos_ratio = idx / length
+        if pos_ratio < 0.2: return "開頭"
+        if pos_ratio < 0.4: return "前半段"
+        if pos_ratio < 0.6: return "中段"
+        if pos_ratio < 0.8: return "後半段"
+        return "結尾"
 
-    if is_start and not is_end:
-        return "開頭到中間"
-    if not is_start and is_end:
-        return "中間到結尾"
-    if not is_start and not is_end:
-        return "中間到中間"
-    return "全程跟隨"
+    start_pos_tag = get_position_label(start_idx, target_len)
+    end_pos_tag = get_position_label(end_idx, target_len)
+    
+    if start_pos_tag == end_pos_tag:
+        position_tag = f"僅{start_pos_tag}"
+    else:
+        position_tag = f"{start_pos_tag}到{end_pos_tag}"
+
+    return f"{length_tag}跟隨 ({position_tag})"
 
 # --- 主流程函式 ---
 
@@ -83,6 +97,8 @@ def run_trip_oriented_convoy_analysis(full_data: pd.DataFrame):
         return
 
     analyzed_trips = []
+    # 【【【 新增1: 建立一個list來儲存所有同行事件，用於最終的摘要 】】】
+    all_convoy_events_for_summary = []
     cam_name_map = full_data.drop_duplicates(subset=['LocationID']).set_index('LocationID')['攝影機名稱'].to_dict()
 
     for trip_index, trip_info in enumerate(all_target_trips):
@@ -97,8 +113,7 @@ def run_trip_oriented_convoy_analysis(full_data: pd.DataFrame):
         max_convoy_length_in_trip = 0
 
         for partner_plate in available_plates:
-            if partner_plate == target_plate:
-                continue
+            if partner_plate == target_plate: continue
             
             partner_df = full_data[full_data['車牌'] == partner_plate].copy()
             partner_df_sorted = partner_df.sort_values('datetime')
@@ -119,22 +134,13 @@ def run_trip_oriented_convoy_analysis(full_data: pd.DataFrame):
                 ]
                 
                 if not possible_matches.empty:
-                    best_match = possible_matches.loc[
-                        (possible_matches['datetime'] - target_time).abs().idxmin()
-                    ]
-                    
-                    event = {
-                        'datetime_x': target_time,
-                        'datetime_y': best_match['datetime'],
-                        'LocationID': target_loc,
-                    }
+                    best_match = possible_matches.loc[(possible_matches['datetime'] - target_time).abs().idxmin()]
+                    event = {'datetime_x': target_time, 'datetime_y': best_match['datetime'], 'LocationID': target_loc}
                     co_occurrence_events_list.append(event)
 
-            if not co_occurrence_events_list:
-                continue
+            if not co_occurrence_events_list: continue
 
             co_occurrence_events_df = pd.DataFrame(co_occurrence_events_list)
-            
             continuous_segments = _find_continuous_segments(co_occurrence_events_df)
             
             for segment_df in continuous_segments:
@@ -150,6 +156,15 @@ def run_trip_oriented_convoy_analysis(full_data: pd.DataFrame):
                         'convoy_segment_df': segment_df
                     }
                     convoy_partners_found.append(partner_info)
+
+                    # 【【【 新增2: 將這個事件的摘要資訊加入總表list中 】】】
+                    summary_event = {
+                        'date': partner_info['start_time'].date(),
+                        'partner_plate': partner_plate,
+                        'start_loc_name': cam_name_map.get(partner_info['start_loc_id'], partner_info['start_loc_id']),
+                        'end_loc_name': cam_name_map.get(partner_info['end_loc_id'], partner_info['end_loc_id']),
+                    }
+                    all_convoy_events_for_summary.append(summary_event)
                     
                     if len(segment_df) > max_convoy_length_in_trip:
                         max_convoy_length_in_trip = len(segment_df)
@@ -166,9 +181,35 @@ def run_trip_oriented_convoy_analysis(full_data: pd.DataFrame):
         print(f"\n分析完成：未找到車輛 {target_plate} 有任何被跟隨超過 20 個地點的行程。")
         return
 
+    # 【【【 新增3: 在詳細報告前，先列印摘要總表 】】】
+    print("\n" + "#"*70)
+    print("## 同行分析總體摘要報告")
+    print("#"*70)
+    
+    data_start_date = full_data['datetime'].min().strftime('%Y-%m-%d')
+    data_end_date = full_data['datetime'].max().strftime('%Y-%m-%d')
+    
+    print(f"  - 資料時間段: {data_start_date} ~ {data_end_date}")
+    print(f"  - 目標車車牌: {target_plate}")
+    
+    if not all_convoy_events_for_summary:
+        print("  - 同行車總覽: 在此時間段內未發現符合條件的同行車輛。")
+    else:
+        # 依日期排序，讓報表更清晰
+        sorted_summary = sorted(all_convoy_events_for_summary, key=lambda x: x['date'])
+        print("\n  --- 同行車總覽 (所有符合條件的事件) ---")
+        print(f"  {'日期':<12} {'同行車車牌':<15} {'跟隨起始點':<20} {'跟隨結束點':<20}")
+        print(f"  {'='*10:<12} {'='*12:<15} {'='*18:<20} {'='*18:<20}")
+        for event in sorted_summary:
+            print(f"  {str(event['date']):<12} {event['partner_plate']:<15} {event['start_loc_name']:<20} {event['end_loc_name']:<20}")
+
+    # --- 以下保留原本的詳細報告邏輯 ---
+    
     sorted_trips = sorted(analyzed_trips, key=lambda x: x['max_convoy_length'], reverse=True)
     
-    print(f"\n--- {target_plate} 被跟隨路段最長的前 {min(3, len(sorted_trips))} 大行程報告 ---")
+    print(f"\n\n" + "#"*70)
+    print(f"## {target_plate} 被跟隨路段最長的前 {min(3, len(sorted_trips))} 大行程詳細報告")
+    print("#"*70)
 
     for i, trip_data in enumerate(sorted_trips[:3]):
         target_info = trip_data['trip_info']
@@ -179,7 +220,7 @@ def run_trip_oriented_convoy_analysis(full_data: pd.DataFrame):
         end_loc_name = cam_name_map.get(target_info['end_area_id'], "未知")
 
         print("\n" + "="*70)
-        print(f"## 報告 {i+1}: 目標車行程 (共 {len(target_df)} 個地點)")
+        print(f"## 詳細報告 {i+1}: 目標車行程 (共 {len(target_df)} 個地點)")
         print("="*70)
         print(f"  - 行程日期: {target_info['start_time'].strftime('%Y-%m-%d')}")
         print(f"  - 行程時間: {target_info['start_time'].strftime('%H:%M')} -> {target_info['end_time'].strftime('%H:%M')} (耗時 {target_info['duration_minutes']:.1f} 分鐘)")
@@ -189,23 +230,19 @@ def run_trip_oriented_convoy_analysis(full_data: pd.DataFrame):
 
         print("\n  --- 同行車資訊 ---")
         
-        # 【【【 核心修正處：在列印前，先根據同行比例對夥伴車輛進行排序 】】】
-        # 使用 lambda 函式來計算每個夥伴的同行比例作為排序的 key
-        # reverse=True 確保比例越高的排在越前面
         sorted_partners = sorted(
             partners,
             key=lambda p: p['segment_length'] / len(target_df) if len(target_df) > 0 else 0,
             reverse=True
         )
 
-        # 使用排序後的 sorted_partners 列表來產生報告
         for j, partner_info in enumerate(sorted_partners):
             p_start_loc_name = cam_name_map.get(partner_info['start_loc_id'], "未知")
             p_end_loc_name = cam_name_map.get(partner_info['end_loc_id'], "未知")
             avg_lag = np.mean(partner_info['time_lags'])
             lag_str = f"晚 {avg_lag:.1f} 秒" if avg_lag > 0 else f"早 {abs(avg_lag):.1f} 秒"
             
-            pattern_tag = _get_following_pattern(target_df, partner_info['convoy_segment_df'])
+            pattern_tag = _get_following_pattern_v2(target_df, partner_info['convoy_segment_df'])
 
             print(f"\n    [同行車 #{j+1}]")
             print(f"    - 車牌: {partner_info['plate']}")
@@ -221,4 +258,3 @@ def run_trip_oriented_convoy_analysis(full_data: pd.DataFrame):
             print(f"    - 同行時間: {partner_info['start_time'].strftime('%H:%M:%S')} -> {partner_info['end_time'].strftime('%H:%M:%S')} (耗時 {(partner_info['end_time'] - partner_info['start_time']).total_seconds() / 60:.1f} 分鐘)")
             print(f"    - 同行起點: {p_start_loc_name} ({partner_info['start_loc_id']})")
             print(f"    - 同行終點: {p_end_loc_name} ({partner_info['end_loc_id']})")
-
