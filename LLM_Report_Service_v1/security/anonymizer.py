@@ -10,47 +10,22 @@ def format_summary_for_prompt(summary: dict, area_map: dict) -> str:
     prompt_text += "--- 分析摘要 ---\n"
 
     # --- 主要據點資訊 ---
-    prompt_text += "\n[主要據點資訊]\n"
-    if summary['base_info']['primary']:
-        hb = summary['base_info']['primary']
-        prompt_text += f"- 主要基地: {hb['area_id']} ({hb['name']})\n"
-        prompt_text += f"  - 長時停留次數: {hb.get('long_stay_count', hb['visit_count'])} 次\n"
-
-        # 【單一、正確的判斷邏輯】
-        if hb.get('stay_pattern_type') == '長期駐留':
-            prompt_text += f"  - 模式：長期駐留 (平均每次停留約 {hb['avg_duration_days']} 天)\n"
-        elif hb.get('avg_arrival_time') and hb.get('avg_departure_time'):
-            prompt_text += f"  - 平均停留時段: {hb['avg_arrival_time']} ~ {hb['avg_departure_time']}\n"
-        else: # 處理單次停留的情況
-            prompt_text += f"  - 停留時長: {hb['total_duration_hours']} 小時\n"
+    prompt_text += "\n[主要活動/停留點分析]\n"
+# 【簡化】不再需要區分 primary/secondary，因為標籤1, 2, 3已經隱含了重要性
+    if not summary['all_stay_points_stats']:
+        prompt_text += "- 未發現明顯的長時間停留點。\n"
     else:
-        prompt_text += "- 無法確定主要基地。\n"
-        
-    if summary['base_info']['secondary']:
-        for i, sb in enumerate(summary['base_info']['secondary']):
-            prompt_text += f"- 次要基地 {i+1}: {sb['area_id']} ({sb['name']})\n"
-            prompt_text += f"  - 長時停留次數: {sb.get('long_stay_count', sb['visit_count'])} 次\n"
-
-            # 【單一、正確的判斷邏輯，並使用正確的變數 sb】
-            if sb.get('stay_pattern_type') == '長期駐留':
-                prompt_text += f"  - 模式：長期駐留 (平均每次停留約 {sb['avg_duration_days']} 天)\n"
-            elif sb.get('avg_arrival_time') and sb.get('avg_departure_time'):
-                prompt_text += f"  - 平均停留時段: {sb['avg_arrival_time']} ~ {sb['avg_departure_time']}\n"
-            else: # 處理單次停留的情況
-                prompt_text += f"  - 停留時長: {sb['total_duration_hours']} 小時\n"
+        for sp in summary['all_stay_points_stats']:
+            prompt_text += f"- {sp['name']} ({sp['area_id']}): " # (這裡的 sp['name'] 會被後續步驟替換掉)
+            prompt_text += f"來訪 {sp['visit_count']} 次, 總計 {sp['total_duration_hours']} 小時"
+            
+            if sp.get('stay_pattern_type') == '長期駐留':
+                prompt_text += f", 模式：長期駐留 (平均每次停留約 {sp['avg_duration_days']} 天)\n"
+            elif sp.get('avg_arrival_time'):
+                 prompt_text += f", 通常時段 {sp['avg_arrival_time']} ~ {sp['avg_departure_time']}\n"
+            else:
+                 prompt_text += "\n"
     
-    # --- 所有停留點統計 (這裡也使用我們之前修改好的新邏輯) ---
-    prompt_text += "\n[所有停留點統計]\n"
-    for sp in summary['all_stay_points_stats']:
-        prompt_text += f"- {sp['area_id']} ({sp['name']}): "
-        prompt_text += f"來訪 {sp['visit_count']} 次, 總計 {sp['total_duration_hours']} 小時"
-        
-        if sp.get('stay_pattern_type') == '長期駐留':
-            prompt_text += f", 模式：長期駐留 (平均每次停留約 {sp['avg_duration_days']} 天)\n"
-        elif sp.get('avg_arrival_time'):
-             prompt_text += f", 通常時段 {sp['avg_arrival_time']} ~ {sp['avg_departure_time']}\n"
-        else:
-             prompt_text += "\n"
 
     # --- 後續的程式碼 (規律模式、異常事件) 維持不變 ---
     # (此處省略後續未變動的程式碼，你的版本是正確的)
@@ -98,44 +73,54 @@ def format_summary_for_prompt(summary: dict, area_map: dict) -> str:
     prompt_text += "\n--- 摘要結束 ---\n"
     return prompt_text
 
+# security/anonymizer.py
+
+# ... (format_summary_for_prompt 函式先不用動) ...
+
+# security/anonymizer.py (新架構版)
+import pandas as pd
+
+# format_summary_for_prompt 函式維持不變，因為我們希望原始資料盡可能完整
+# (此處省略該函式，請保留您檔案中原有的版本)
+# ...
+
 def anonymize_data(summary: dict, area_map: dict, plate_number: str):
     """
-    將分析摘要和映射表去識別化，生成安全的 Prompt 和還原用的映射表。
+    (新架構版) 將分析摘要去識別化。
+    - reversal_map 現在儲存更豐富的資訊：{"Area-ID": {"name": "...", "label": "..."}}
+    - Prompt 中的地點名稱會被統一替換成 Area-ID。
     """
     reversal_map = {}
     
-    plate_code = "目標車輛A"
-    reversal_map[plate_code] = plate_number
-    
-    name_to_code_map = {}
-    # 根據地點在 all_stay_points_stats 中的排序來生成 A, B, C... 代碼
-    if 'all_stay_points_stats' in summary:
-        for i, sp in enumerate(summary['all_stay_points_stats']):
-            name = sp['name']
-            if name not in name_to_code_map:
-                location_code = f"地點-{chr(65+i)}"
-                name_to_code_map[name] = location_code
-                reversal_map[location_code] = name
-    
-    # 為 area_map 中有，但不在 all_stay_points_stats 的地點提供備用代碼
+    # 步驟 1: 建立基礎的 reversal_map，包含所有地點的名稱和預設空標籤
     for area_id, name in area_map.items():
-        if name not in name_to_code_map:
-            location_code = f"地點-{area_id.replace('Area-','')}"
-            name_to_code_map[name] = location_code
-            reversal_map[location_code] = name
+        reversal_map[area_id] = {"name": name, "label": None}
+        
+    # 步驟 2: 遍歷排序後的主要停留點，為它們在 map 中“貼上”標籤
+    label_counter = 1
+    if 'all_stay_points_stats' in summary:
+        for sp in summary['all_stay_points_stats']:
+            area_id = sp['area_id']
+            if area_id in reversal_map:
+                reversal_map[area_id]["label"] = f"主要活動/停留點{label_counter}"
+                label_counter += 1
 
+    # 處理車牌
+    reversal_map["目標車輛A"] = {"name": plate_number, "label": "目標車輛"}
+
+    # 步驟 3: 準備發送給 LLM 的文本，將所有地點全名替換成 Area-ID
     full_prompt_text = format_summary_for_prompt(summary, area_map)
-
     anonymized_prompt_text = full_prompt_text
-    
-    # 優先替換較長的名稱，避免部分匹配錯誤
-    sorted_names = sorted(name_to_code_map.keys(), key=len, reverse=True)
-    
+
+    # 優先替換較長的攝影機名稱，避免部分匹配錯誤
+    sorted_names = sorted(area_map.values(), key=len, reverse=True)
     for name in sorted_names:
-        code = name_to_code_map[name]
-        anonymized_prompt_text = anonymized_prompt_text.replace(name, code)
-    
-    # 最後替換車牌
-    anonymized_prompt_text = anonymized_prompt_text.replace(plate_number, plate_code)
+        # 找到這個名稱對應的 Area-ID
+        area_id = next((aid for aid, n in area_map.items() if n == name), None)
+        if area_id:
+            anonymized_prompt_text = anonymized_prompt_text.replace(name, area_id)
+
+    # 替換車牌
+    anonymized_prompt_text = anonymized_prompt_text.replace(plate_number, "目標車輛A")
         
     return anonymized_prompt_text, reversal_map

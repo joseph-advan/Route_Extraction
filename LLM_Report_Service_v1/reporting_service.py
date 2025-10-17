@@ -1,9 +1,10 @@
-# reporting_service.py (最終版 - Markdown 格式化輸出)
+# reporting_service.py (修正版 - 正確處理 OpenAI 回應物件)
 
 import pandas as pd
 import json
+import re
 
-# 匯入所有需要的分析與安全模組
+# (上方的 import 和 format_details_to_string 函式維持不變)
 from analysis.camera_clusterer import cluster_cameras_by_distance
 from analysis.stay_point_detector import find_stay_points_v2
 from analysis.trip_segmenter import segment_trips_v3
@@ -13,32 +14,43 @@ from security.anonymizer import anonymize_data
 from security.deanonymizer import deanonymize_report
 from llm_clients.cloud_client import generate_report_from_summary
 
-# ==============================================================================
-# 【【【 修改處: 將輸出格式改為 Markdown 】】】
-# ==============================================================================
+# reporting_service.py
+
 def format_details_to_string(summary_data: dict, area_map: dict) -> str:
-    """將分析完成的 summary dictionary 轉換為人類可讀的 Markdown 格式化字串。"""
+    """
+    (修正版) 將分析完成的 summary dictionary 轉換為人類可讀的 Markdown 格式化字串。
+    - 將「基地」的說法統一為「主要活動/停留點」標籤。
+    """
     output = []
 
-    # 1. 主要據點資訊
+    # 1. 【修改】主要據點資訊 -> 主要活動/停留點
     if summary_data.get("base_info"):
-        output.append("### [主要據點資訊]\n")
+        # 將標題從「主要據點資訊」改為「主要活動/停留點」
+        output.append("### [主要活動/停留點]\n")
+        
+        # 使用計數器來產生 1, 2, 3... 的標籤
+        label_counter = 1
+        
         primary = summary_data["base_info"].get("primary")
         if primary:
-            output.append(f"- **主要基地**: {primary.get('area_id', 'N/A')} ({primary.get('name', 'N/A')})")
+            # 將「主要基地」替換為「主要活動/停留點1」
+            output.append(f"- **主要活動/停留點{label_counter}**: {primary.get('area_id', 'N/A')} ({primary.get('name', 'N/A')})")
             output.append(f"  - **長時停留次數**: {primary.get('long_stay_count', 'N/A')} 次")
             if primary.get('avg_arrival_time'):
                  output.append(f"  - **平均停留時段**: {primary.get('avg_arrival_time', 'N/A')} ~ {primary.get('avg_departure_time', 'N/A')}")
+            label_counter += 1 # 計數器加一
         
         secondary = summary_data["base_info"].get("secondary", [])
-        for i, base in enumerate(secondary):
-            output.append(f"- **次要基地 {i+1}**: {base.get('area_id', 'N/A')} ({base.get('name', 'N/A')})")
+        for base in secondary:
+            # 將「次要基地」替換為「主要活動/停留點2」、「3」...
+            output.append(f"- **主要活動/停留點{label_counter}**: {base.get('area_id', 'N/A')} ({base.get('name', 'N/A')})")
             output.append(f"  - **長時停留次數**: {base.get('long_stay_count', 'N/A')} 次")
             if base.get('stay_pattern_type') == '長期駐留':
                 output.append(f"  - **模式**：{base.get('stay_pattern_type', 'N/A')} (平均每次停留約 {base.get('avg_duration_days', 'N/A')} 天)")
+            label_counter += 1 # 計數器加一
         output.append("\n---\n")
 
-    # 2. 所有停留點統計
+    # 2. 所有停留點統計 (此區塊維持不變，作為補充資訊)
     if summary_data.get("all_stay_points_stats"):
         output.append("### [所有停留點統計]\n")
         for sp in summary_data["all_stay_points_stats"]:
@@ -50,7 +62,7 @@ def format_details_to_string(summary_data: dict, area_map: dict) -> str:
             output.append(line)
         output.append("\n---\n")
 
-    # 3. 已確認的規律模式
+    # 3. 已確認的規律模式 (此區塊維持不變)
     if summary_data.get("regular_patterns"):
         output.append("### [已確認的規律模式]\n")
         pattern_labels = [f"模式 {chr(65 + i)}" for i in range(len(summary_data["regular_patterns"]))]
@@ -63,7 +75,7 @@ def format_details_to_string(summary_data: dict, area_map: dict) -> str:
                           f"平均耗時 **{p.get('avg_duration_minutes', 'N/A')} 分鐘**")
         output.append("\n---\n")
 
-    # 4. 路徑異常事件
+    # 4. 路徑異常事件 (此區塊維持不變)
     output.append("### [路徑異常事件 (次數較少的行程)]\n")
     infrequent = summary_data.get("infrequent_patterns", [])
     if not infrequent:
@@ -77,7 +89,7 @@ def format_details_to_string(summary_data: dict, area_map: dict) -> str:
                           f"耗時 **{anomaly.get('duration_minutes', 'N/A')} 分鐘**")
     output.append("\n---\n")
 
-    # 5. 時間異常事件
+    # 5. 時間異常事件 (此區塊維持不變)
     output.append("### [時間異常事件]\n")
     duration_anomalies = summary_data.get("duration_anomalies", [])
     if not duration_anomalies:
@@ -96,13 +108,12 @@ def format_details_to_string(summary_data: dict, area_map: dict) -> str:
 
     return "\n".join(output)
 
-# ==============================================================================
-# 【【【 主要流程函式 (維持不變) 】】】
-# ==============================================================================
 def run_llm_reporting_flow(full_df: pd.DataFrame, target_plate: str, debug_mode: bool = False):
-    """
-    執行從數據分析到 LLM 報告生成的完整流程。
-    """
+
+    
+    # ==============================================================================
+    # 步驟 1: 執行本地數據分析引擎 (此區塊不變)
+    # ==============================================================================
     print("\n--- 正在執行本地數據分析引擎... ---")
     
     unique_cameras = full_df[['攝影機', '攝影機名稱', '經度', '緯度', '單位']].drop_duplicates(subset=['攝影機']).reset_index(drop=True)
@@ -134,35 +145,67 @@ def run_llm_reporting_flow(full_df: pd.DataFrame, target_plate: str, debug_mode:
     
     final_summary = {**regular_summary, **anomalies}
     print("--- 本地數據分析完成 ---")
+    # ... (debug 模式程式碼不變) ...
 
-    if debug_mode:
-        print("\n" + "#"*70)
-        print("## DEBUG: Area ID -> 地點名稱映射表 (Area Map)")
-        print("#"*70)
-        print(json.dumps(area_map, indent=2, ensure_ascii=False))
-        
-        print("\n" + "#"*70)
-        print("## DEBUG: 完整分析結果原始 JSON (Final Summary)")
-        print("#"*70)
-        print(json.dumps(final_summary, indent=2, ensure_ascii=False, default=str))
-
+    # ==============================================================================
+    # 步驟 2: 去識別化並呼叫 LLM (此區塊不變)
+    # ==============================================================================
     anonymized_prompt, reversal_map = anonymize_data(final_summary, area_map, target_plate)
     
     print("\n--- 正在呼叫雲端 LLM 生成智慧摘要... ---")
-    draft_summary = generate_report_from_summary(anonymized_prompt)
+    summary_from_llm = generate_report_from_summary(anonymized_prompt)
     
-    final_summary_text = deanonymize_report(draft_summary, reversal_map)
-
+    # ==============================================================================
+    # 步驟 3: 組合並輸出最終報告
+    # ==============================================================================
+    
+    # 【【【【 核心修正處：將 details_str 的定義加回這裡 】】】】
     details_str = format_details_to_string(final_summary, area_map)
-
-    # --- 最終輸出 ---
+    
     print("\n\n" + "#"*70)
     print("## 最終分析報告")
     print("#"*70)
 
     print("\n【 智慧摘要 】\n")
-    print(final_summary_text)
+    print(summary_from_llm)
 
+    print("\n" + "-"*35)
+    print("  地點說明:")
+    
+    mentioned_areas = sorted(list(set(re.findall(r'Area-\d+', summary_from_llm))))
+            
+    if mentioned_areas:
+        main_points = []
+        other_points = []
+        
+        for area_id in mentioned_areas:
+            if area_id in reversal_map:
+                info = reversal_map[area_id]
+                if info.get("label"):
+                    main_points.append((area_id, info))
+                else:
+                    other_points.append((area_id, info))
+        
+        main_points.sort(key=lambda item: int(item[1]['label'].replace("主要活動/停留點", "")))
+
+        for area_id, info in main_points:
+            print(f'  * {area_id} ({info["label"]}): {info["name"]}')
+
+        for area_id, info in other_points:
+            print(f'  * {area_id}: {info["name"]}')
+    else:
+        print("  - 摘要中未提及具體地點。")
+        
+    print("-" * 35)
+    
     print("\n" + "="*70 + "\n")
     print("【 詳細數據 】\n")
-    print(details_str)
+    
+    final_details_str = details_str
+    sorted_real_names = sorted(area_map.values(), key=len, reverse=True)
+    for name in sorted_real_names:
+        area_id = next((aid for aid, n in area_map.items() if n == name), None)
+        if area_id:
+            final_details_str = final_details_str.replace(name, area_id)
+            
+    print(final_details_str)

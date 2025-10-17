@@ -1,50 +1,54 @@
-# llm_clients/cloud_client.py (重構版)
+# llm_clients/cloud_client.py (OpenAI 專用版 - 回傳 Token 用量)
 
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# 從我們的新檔案中，匯入 SYSTEM_PROMPT 變數
+# 從 prompts 模組匯入 SYSTEM_PROMPT (維持不變)
 from prompts.report_prompt import SYSTEM_PROMPT
 
-# --- 1. API 金鑰管理 ---
+# --- 1. API 金鑰管理 (簡化版) ---
 load_dotenv()
 API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# 初始化 OpenAI 客戶端
+# --- 2. 初始化 OpenAI 客戶端 (簡化版) ---
 try:
     if not API_KEY:
-        raise ValueError("OPENAI_API_KEY not found. Please set it in your .env file or environment variables.")
+        raise ValueError("在 .env 檔案中找不到 OPENAI_API_KEY。")
+    
     client = OpenAI(api_key=API_KEY)
+    print("--- LLM Client: Initialized with OpenAI ---")
+
 except Exception as e:
     print(f"初始化 OpenAI client 失敗: {e}")
     client = None
 
-# --- 2. 系統提示 (System Prompt) ---
-# 現在這裡變得非常乾淨，直接從外部匯入即可。
-
-def generate_report_from_summary(anonymized_summary_text: str) -> str:
+# --- 3. 修改函式以回傳完整的 response 物件 ---
+def generate_report_from_summary(anonymized_summary_text: str):
     """
-    將去識別化的分析摘要發送給雲端 LLM，並獲取報告。
+    將摘要發送給 OpenAI，並獲取包含 usage 的完整回覆。
     """
     if not client:
-        error_message = "錯誤：OpenAI API client 未成功初始化。請檢查您的 .env 檔案或環境變數中的 API 金鑰設定。"
-        print(error_message)
-        return f"{error_message}\n\n--- 模擬報告 ---\n摘要內容顯示...\n{anonymized_summary_text[:300]}..."
+        raise ConnectionError("LLM API client 未成功初始化。")
+
+    # 指定要使用的 OpenAI 模型
+    model_to_use = "gpt-4o"
 
     try:
+        print(f"--- Calling OpenAI model: {model_to_use} ---")
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=model_to_use,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT}, # <-- 直接使用匯入的變數
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": anonymized_summary_text}
             ],
             temperature=0.2,
             max_tokens=2048
         )
+        # 【【【 核心修改處：回傳完整的 response 物件 】】】
         return response.choices[0].message.content
-
+    
+    
     except Exception as e:
-        error_message = f"呼叫 OpenAI API 時發生錯誤: {e}"
-        print(error_message)
-        return f"生成報告時發生錯誤：{e}"
+        print(f"呼叫 OpenAI API 時發生錯誤: {e}")
+        return None # 發生錯誤時回傳 None
