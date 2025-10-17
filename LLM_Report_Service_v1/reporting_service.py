@@ -14,86 +14,77 @@ from security.anonymizer import anonymize_data
 from security.deanonymizer import deanonymize_report
 from llm_clients.cloud_client import generate_report_from_summary
 
-# reporting_service.py
-
 def format_details_to_string(summary_data: dict, area_map: dict) -> str:
     """
-    (修正版) 將分析完成的 summary dictionary 轉換為人類可讀的 Markdown 格式化字串。
-    - 將「基地」的說法統一為「主要活動/停留點」標籤。
+    (最終架構版) 將分析完成的 summary dictionary 轉換成人類可讀的 Markdown 格式化字串。
+    - 為「單次停留」的點，顯示其具體的開始與結束時間。
     """
     output = []
 
-    # 1. 【修改】主要據點資訊 -> 主要活動/停留點
-    if summary_data.get("base_info"):
-        # 將標題從「主要據點資訊」改為「主要活動/停留點」
-        output.append("### [主要活動/停留點]\n")
-        
-        # 使用計數器來產生 1, 2, 3... 的標籤
-        label_counter = 1
-        
-        primary = summary_data["base_info"].get("primary")
-        if primary:
-            # 將「主要基地」替換為「主要活動/停留點1」
-            output.append(f"- **主要活動/停留點{label_counter}**: {primary.get('area_id', 'N/A')} ({primary.get('name', 'N/A')})")
-            output.append(f"  - **長時停留次數**: {primary.get('long_stay_count', 'N/A')} 次")
-            if primary.get('avg_arrival_time'):
-                 output.append(f"  - **平均停留時段**: {primary.get('avg_arrival_time', 'N/A')} ~ {primary.get('avg_departure_time', 'N/A')}")
-            label_counter += 1 # 計數器加一
-        
-        secondary = summary_data["base_info"].get("secondary", [])
-        for base in secondary:
-            # 將「次要基地」替換為「主要活動/停留點2」、「3」...
-            output.append(f"- **主要活動/停留點{label_counter}**: {base.get('area_id', 'N/A')} ({base.get('name', 'N/A')})")
-            output.append(f"  - **長時停留次數**: {base.get('long_stay_count', 'N/A')} 次")
-            if base.get('stay_pattern_type') == '長期駐留':
-                output.append(f"  - **模式**：{base.get('stay_pattern_type', 'N/A')} (平均每次停留約 {base.get('avg_duration_days', 'N/A')} 天)")
-            label_counter += 1 # 計數器加一
-        output.append("\n---\n")
-
-    # 2. 所有停留點統計 (此區塊維持不變，作為補充資訊)
-    if summary_data.get("all_stay_points_stats"):
-        output.append("### [所有停留點統計]\n")
-        for sp in summary_data["all_stay_points_stats"]:
-            line = f"- **{sp.get('area_id', 'N/A')} ({sp.get('name', 'N/A')})**: 來訪 {sp.get('visit_count', 'N/A')} 次, 總計 {sp.get('total_duration_hours', 'N/A')} 小時"
+    # --- 區塊 1: 停留點統計 ---
+    output.append("### [停留點統計 (依總停留時間排序)]\n")
+    stay_points = summary_data.get("all_stay_points_stats", [])
+    if stay_points:
+        for i, sp in enumerate(stay_points):
+            label = f" (主要活動/停留點 {i+1})" if i < 3 else ""
+            line = (f"- **{sp.get('area_id', 'N/A')}{label}**: "
+                    f"來訪 {sp.get('visit_count', 'N/A')} 次, "
+                    f"總計 {sp.get('total_duration_hours', 'N/A')} 小時")
+            
             if sp.get('stay_pattern_type') == '長期駐留':
-                line += f", **模式**：{sp.get('stay_pattern_type', 'N/A')} (平均每次停留約 {sp.get('avg_duration_days', 'N/A')} 天)"
-            elif sp.get('avg_arrival_time'):
-                 line += f", **通常時段**: {sp.get('avg_arrival_time', 'N/A')} ~ {sp.get('avg_departure_time', 'N/A')}"
-            output.append(line)
-        output.append("\n---\n")
+                line += f", **模式**：長期駐留 (平均每次停留約 {sp.get('avg_duration_days', 'N/A')} 天)"
+            
+            # 對於多次停留的點，顯示平均時段
+            if sp.get('avg_arrival_time'):
+                 line += f", **通常時段**：{sp.get('avg_arrival_time', 'N/A')} ~ {sp.get('avg_departure_time', 'N/A')}"
+            
+            # 【【核心修改】】對於單次停留的點，顯示精確時段
+            if sp.get('stay_pattern_type') == '單次停留' and 'start_time' in sp:
+                start_str = sp['start_time'].strftime('%Y-%m-%d %H:%M')
+                end_str = sp['end_time'].strftime('%Y-%m-%d %H:%M')
+                line += f", **停留時間**：{start_str} ~ {end_str}"
 
-    # 3. 已確認的規律模式 (此區塊維持不變)
-    if summary_data.get("regular_patterns"):
-        output.append("### [已確認的規律模式]\n")
-        pattern_labels = [f"模式 {chr(65 + i)}" for i in range(len(summary_data["regular_patterns"]))]
-        for label, p in zip(pattern_labels, summary_data["regular_patterns"]):
+            output.append(line)
+    else:
+        output.append("- 在此期間未偵測到任何明顯的停留點。\n")
+    output.append("\n---\n")
+
+    # ... (函式的其餘部分維持不變，此處省略以保持簡潔) ...
+    # --- 區塊 2: 已確認的規律模式 ---
+    output.append("### [已確認的規律模式]\n")
+    regular_patterns = summary_data.get("regular_patterns", [])
+    if regular_patterns:
+        pattern_labels = [f"模式 {chr(65 + i)}" for i in range(len(regular_patterns))]
+        for label, p in zip(pattern_labels, regular_patterns):
             start_name = area_map.get(p.get('start_area_id'), "未知地點")
             end_name = area_map.get(p.get('end_area_id'), "未知地點")
             output.append(f"- **{label}** (從 *{start_name}* 到 *{end_name}*, {p.get('day_type', 'N/A')}-{p.get('time_slot', 'N/A')}): "
                           f"發生 **{p.get('occurrence_count', 'N/A')} 次**, "
                           f"平均時段 `{p.get('avg_start_time', 'N/A')}~{p.get('avg_end_time', 'N/A')}`, "
                           f"平均耗時 **{p.get('avg_duration_minutes', 'N/A')} 分鐘**")
-        output.append("\n---\n")
-
-    # 4. 路徑異常事件 (此區塊維持不變)
-    output.append("### [路徑異常事件 (次數較少的行程)]\n")
-    infrequent = summary_data.get("infrequent_patterns", [])
-    if not infrequent:
-        output.append("- 無\n")
     else:
-        for anomaly in infrequent:
+        output.append("- 在此期間未發現任何重複出現的規律性行程。\n")
+    output.append("\n---\n")
+
+    # --- 區塊 3: 路徑異常事件 ---
+    output.append("### [路徑異常事件 (次數較少的行程)]\n")
+    infrequent_patterns = summary_data.get("infrequent_patterns", [])
+    if infrequent_patterns:
+        for anomaly in infrequent_patterns:
             start_name = area_map.get(anomaly.get('start_area_id'), "未知地點")
             end_name = area_map.get(anomaly.get('end_area_id'), "未知地點")
             start_time_str = anomaly.get('start_time', pd.Timestamp.min).strftime('%Y-%m-%d %H:%M')
             output.append(f"- `{start_time_str}` 從 *{start_name}* 到 *{end_name}*, "
                           f"耗時 **{anomaly.get('duration_minutes', 'N/A')} 分鐘**")
+    else:
+        output.append("- 在此期間未發現任何偶發性之路徑。\n")
     output.append("\n---\n")
 
-    # 5. 時間異常事件 (此區塊維持不變)
+    # --- 區塊 4: 時間異常事件 ---
     output.append("### [時間異常事件]\n")
     duration_anomalies = summary_data.get("duration_anomalies", [])
     if not duration_anomalies:
-        output.append("- 無\n")
+        output.append("- 在此期間，車輛於規律路徑上的行駛時間皆在正常範圍內，未發現時間異常。\n")
     else:
         for anomaly in duration_anomalies:
             actual_duration = anomaly.get('actual_duration_minutes', 0)
